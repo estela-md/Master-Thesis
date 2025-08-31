@@ -1,0 +1,270 @@
+---
+title: "Cleaning the text"
+author: Estela Moral
+format: 
+  html:
+    self-contained: true
+    toc: true
+    toc-location: right
+    toc-title: Index
+editor: source
+---
+
+## Libraries
+
+```{r}
+#| warning: false
+#| message: false
+library(tidyverse)
+library(tidytext)
+library(stopwords)
+library(spacyr)
+library(kableExtra)
+```
+
+```{r}
+load("DATA/complete_df.RData")
+```
+
+Because of the limited computational capacities of my computer, I had to choose only one legislative term for the analysis. I decided to focus on the last available term which spans from 2016 to 2019 (although we only have data up to the end of 2018).
+
+```{r}
+df_XII <- complete_df |> 
+  filter(term == "XII Legislatura (2016–2019)")
+```
+
+```{r}
+#| echo: false 
+head(df_XII, n = 10) |>
+  kable(align = "c") |>
+  kable_styling(full_width = TRUE, 
+                bootstrap_options = c("condensed", "striped")) |>
+  column_spec(
+    1:ncol(head(complete_df)),
+    width = "250px",
+    extra_css = "text-align: center; vertical-align: middle; 
+    white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; max-width: 250px;"
+  ) |> 
+  column_spec(
+    7,  
+    width = "300px",
+    extra_css = "white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; max-width: 300px;") 
+```
+
+## 1. Remove "lo juro/prometo"
+
+```{r}
+clean_speeches <- df_XII |> 
+  filter(
+    !str_detect(
+      text,
+      regex("^\\s*(sí,\\s*)?(lo\\s+)?(juro|prometo)\\b", ignore_case = TRUE)
+    )
+  )
+```
+
+It is the best regex I've come up with in order to not remove other interesting info, but still, it filters out empty "Sí, lo juro/prometo" interventions.
+
+## 2. Lemmatization with `spacyr`
+
+```{r}
+# Initialize spanish model
+spacy_initialize("es_core_news_sm")
+
+# Tokenize and lemmatize
+parsed_df <- spacy_parse(
+  x = data.frame(doc_id = clean_speeches$doc_id, 
+                 text = clean_speeches$text),
+  lemma = TRUE,
+  pos = TRUE,
+  entity = FALSE
+)
+
+# Filter out punctuation and whitespaces
+parsed_df <- parsed_df |> 
+  filter(!pos %in% c("PUNCT", "SPACE"))
+
+# Convert everything to lower case
+parsed_df <- parsed_df |> 
+  mutate(lemma = tolower(lemma))
+```
+
+```{r}
+#| eval: false
+save(parsed_df, file = "DATA/parsed_df.RData")
+```
+
+```{r}
+load("DATA/parsed_df.RData")
+```
+
+```{r}
+unique(parsed_df$pos)
+```
+
+Now let's check other symbols and words that have not been filtered out and clean them:
+
+The category "**SYM**" includes special symbols such as: asterisks (\*), percentage signs (%), slashes (/), hyphens (-), single quotes (') or brackets (\[\]).
+
+```{r}
+sym <- parsed_df |> filter(pos == "SYM")
+
+unique(sym$lemma)
+```
+
+The category "**X**" includes other words or tokens that failed to be identified correctly (mostly hyphens as well):
+
+```{r}
+x <- parsed_df |> filter(pos == "X")
+
+unique(x$lemma)
+```
+
+Let's try to remove them using regular expressions. I prefer not to filter out the categories entirely as there are some relevant words such as "i+d" (*investigación y desarrollo*), important dates such as "7-n" or legislative articles (e.g. "105.b", "18.h).2."...)
+
+```{r}
+parsed_df_clean <- parsed_df |> 
+  filter(
+    !str_detect(token, "^['\\*\\[\\]\\-/º%]+$"), # Isolated symbols
+    !str_detect(token, "^[-]*\\w+[-]+$|^[-]+\\w+[-]*$"),  # Words with dashes at the begining or at the end
+  )
+```
+
+Let's check again:
+
+```{r}
+sym_2 <- parsed_df_clean |> filter(pos == "SYM")
+
+unique(sym_2$lemma)
+```
+
+The category "**X**" includes other words or tokens that failed to be identified correctly (mostly hyphens as well):
+
+```{r}
+x_2 <- parsed_df_clean |> filter(pos == "X")
+
+unique(x_2$lemma)
+```
+
+For the most part, it seems to work well.
+
+Let's recover the metadata we lost when we used `spacy_sparce()`:
+
+```{r}
+# Convert doc_id into numeric so I can join both dataframes
+parsed_df_clean$doc_id <- as.numeric(parsed_df_clean$doc_id)
+
+parsed_df_clean <- parsed_df_clean |> 
+  left_join(clean_speeches, by = "doc_id")
+
+parsed_df_clean <- parsed_df_clean |> 
+  select(-text)
+```
+
+## 3. Filtering stopwords
+
+Now, let's filter out the stopwords. For this purpose we will use different dictionaries and a customized list of words according to our needs.
+
+### 3.1. `stopwords` package
+
+First, I am going to use the `stopwords` package. It includes a collection of stopwords from different languages. We will only load the languages we are interested in: Spanish and Catalan. I've also found some words in Basque, but they are just a few of them and, since there are still no very comprehensive lexicons in this language, I prefer to personally add them to my customized list. So far, I have not found words in other co-official languages.
+
+```{r}
+stopwords_es <- stopwords(language = "es", source = "stopwords-iso")
+
+stopwords_ca <- stopwords(language = "ca", source = "stopwords-iso")
+
+stopwords_es <- tibble(word = stopwords_es)
+stopwords_ca <- tibble(word = stopwords_ca)
+```
+
+### 3.2. Customized stopwords
+
+Now, let's filter out some other unnecessary words which have no relevant semantic meaning such as:
+
+-   Vocatives: señor, señora, señorías, usted, ustedes, presidente, ministro/a...
+
+-   Names of the deputies.
+
+-   Basque words: eskerrik asko, egun on...
+
+-   Others: aplausos, gracias, si, ciento, año...
+
+```{r}
+stopwords_extra <- c("señor", "señora", "señoría", "señoer",
+                     "presidente", "aplausos", "gracia","gracias",
+                     "año", "«", "»", "señorías", "ministro", 
+                     "ministra", "eskerrik", "asko", "egun", "on",
+                     "senyor", "senyoro", "senyora", "senyors", 
+                     "gràcies", "tothom", "bon", "bona",
+                     "diputado", "diputada", "diputats",
+                     "diputades", "diputad", "senyori", "`")
+
+stopwords_extra <- tibble(word = stopwords_extra)
+```
+
+```{r}
+diputados <- read_csv2("DATA/Diputados todas las legislaturas.csv")
+
+# Combine name and surname in a single column and convert to lowercase
+nombres_completos <- diputados |> 
+  unite(nombre_completo, NOMBRE, APELLIDOS, sep = " ") |> 
+  mutate(nombre_completo = str_to_lower(nombre_completo))
+
+# Separate words into separate tokens
+nombres_individuales <- nombres_completos |> 
+  separate_rows(nombre_completo, sep = " ")
+
+# Create tibble
+stopwords_diputados <- nombres_individuales |> 
+  distinct(nombre_completo) |> 
+  rename(word = nombre_completo)
+```
+
+```{r}
+# Join all stopwords
+stopwords_total <- bind_rows(stopwords_es, stopwords_ca,
+                             stopwords_extra, 
+                             stopwords_diputados) |>
+  distinct()
+```
+
+Now that we have our final list of stopwrds, we can go ahead and filter them out from our dataframe:
+
+```{r}
+# Rename "lemma" column into "word" so I can use anti_join() properly
+parsed_df_clean <- parsed_df_clean |> 
+  rename(word = lemma)
+
+# Filter stopwords
+parsed_df_clean <- parsed_df_clean |> 
+  anti_join(stopwords_total, by = "word")
+```
+
+Final dataframe:
+
+```{r}
+#| echo: false 
+head(parsed_df_clean, n = 10) |>
+  kable(align = "c") |>
+  kable_styling(full_width = TRUE, 
+                bootstrap_options = c("condensed", "striped")) |>
+  column_spec(
+    1:ncol(head(parsed_df_clean)),
+    width = "250px",
+    extra_css = "text-align: center; vertical-align: middle; 
+    white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; max-width: 250px;"
+  ) |> 
+  column_spec(
+    8,  
+    width = "300px",
+    extra_css = "white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; max-width: 300px;") 
+```
+
+```{r}
+save(parsed_df_clean, file = "DATA/parsed_df_clean.RData")
+```

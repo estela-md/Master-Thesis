@@ -1,0 +1,812 @@
+---
+title: "Preliminary data exploration"
+author: Estela Moral
+format: 
+  html:
+    self-contained: true
+    toc: true
+    toc-location: right
+    toc-title: Index
+editor: source
+---
+
+## Libraries
+
+```{r}
+#| message: false
+#| warning: false
+library(tidyverse)
+library(tidytext)
+library(stm)
+library(topicmodels)
+library(igraph)
+library(ggraph)
+library(widyr)
+library(kableExtra)
+library(DT)
+```
+
+```{r}
+load("DATA/parsed_df_clean.RData")
+```
+
+```{r}
+#| echo: false 
+head(parsed_df_clean, n = 10) |>
+  kable(align = "c") |>
+  kable_styling(full_width = TRUE, 
+                bootstrap_options = c("condensed", "striped")) |>
+  column_spec(
+    1:ncol(head(parsed_df_clean)),
+    width = "250px",
+    extra_css = "text-align: center; vertical-align: middle; 
+    white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; max-width: 250px;"
+  ) |> 
+  column_spec(
+    8,  
+    width = "300px",
+    extra_css = "white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; max-width: 300px;") 
+```
+
+## 1. TOP 15 most used words by year:
+
+```{r, results = 'hide'}
+word_freq <- parsed_df_clean |> 
+  count(year, word, sort = TRUE) |> 
+  group_by(year) |> 
+  slice_max(n, n = 15) |> 
+  ungroup()
+```
+
+```{r, echo = FALSE}
+datatable(word_freq,
+          options = list(
+            pageLength = 15,
+            dom = 'tp',
+            columnDefs = list(
+              list(className = 'dt-center', 
+                   targets = "_all")),
+            rownames = FALSE))
+```
+
+## 2. TF-IDF
+
+**Most distinctive words of each year**:
+
+```{r}
+tfidf_all <- parsed_df_clean |> 
+  count(year, word, sort = TRUE) |> 
+  bind_tf_idf(word, year, n) |> 
+  arrange(desc(tf_idf))
+
+tfidf_all |> 
+  group_by(year) |> 
+  slice_max(tf_idf, n = 10) |> 
+  ungroup() |> 
+  ggplot(aes(tf_idf, fct_reorder(word, tf_idf), fill = year)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ year, scales = "free") +
+  labs(x = "tf-idf", y = NULL)
+```
+
+**Most distinctive words of each year by party**:
+
+```{r}
+unique(parsed_df_clean$party)
+```
+
+```{r}
+party_colors <- c(
+  "PSOE" = "#E30613",
+  "PNV" = "#2A8343",
+  "PP" = "#0093D8",
+  "Cs" = "#FA4F00",
+  "CUP-EC-EM" = "#693065",
+  "ER" = "#FFBF41",
+  "DL" = "#2E307A",
+  "MX" = "#848484"
+)
+```
+
+### 2016
+
+```{r}
+speeches_2016 <- parsed_df_clean |>
+  filter(year == 2016)
+
+tfidf_2016 <- speeches_2016 |> 
+  count(party, word, sort = TRUE) |> 
+  bind_tf_idf(word, party, n) |> 
+  arrange(desc(tf_idf))
+
+tfidf_2016 |> 
+  group_by(party) |> 
+  slice_max(tf_idf, n = 10) |> 
+  ungroup() |> 
+  ggplot(aes(tf_idf, fct_reorder(word, tf_idf), fill = party)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ party, scales = "free") +
+  scale_fill_manual(values = party_colors) +
+  labs(x = "tf-idf", y = NULL)
+```
+
+### 2017
+
+```{r}
+speeches_2017 <- parsed_df_clean |>
+  filter(year == 2017)
+
+tfidf_2017 <- speeches_2017 |> 
+  count(party, word, sort = TRUE) |> 
+  bind_tf_idf(word, party, n) |> 
+  arrange(desc(tf_idf))
+
+tfidf_2017 |> 
+  group_by(party) |> 
+  slice_max(tf_idf, n = 10) |> 
+  ungroup() |> 
+  ggplot(aes(tf_idf, fct_reorder(word, tf_idf), fill = party)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ party, scales = "free") +
+  scale_fill_manual(values = party_colors) +
+  labs(x = "tf-idf", y = NULL)
+```
+
+### 2018
+
+```{r}
+speeches_2018 <- parsed_df_clean |>
+  filter(year == 2018)
+
+tfidf_2018 <- speeches_2018 |> 
+  count(party, word, sort = TRUE) |> 
+  bind_tf_idf(word, party, n) |> 
+  arrange(desc(tf_idf))
+
+tfidf_2018 |> 
+  group_by(party) |> 
+  slice_max(tf_idf, n = 10) |> 
+  ungroup() |> 
+  ggplot(aes(tf_idf, fct_reorder(word, tf_idf), fill = party)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ party, scales = "free") +
+  scale_fill_manual(values = party_colors) +
+  labs(x = "tf-idf", y = NULL)
+```
+
+## 3. Topic Modelling
+
+### 3.1. STM
+
+First, we need to prepare the data in the proper format for the STM to work. To do that we have to collapse all the words back together (STEM works with complete texts, not individual tokens).
+
+```{r}
+df_texts <- parsed_df_clean |> 
+  group_by(doc_id) |> 
+  summarise(text = paste(word, collapse = " ")) |> 
+  ungroup()
+```
+
+```{r}
+df_meta <- parsed_df_clean |> 
+  select(doc_id, date, party, speaker) |> 
+  distinct()
+```
+
+Now let's join both dataframes back together:
+
+```{r}
+df_combined <- df_texts |> 
+  left_join(df_meta, by = "doc_id")
+```
+
+Process the text and prepare the output:
+
+```{r}
+processed <- textProcessor(documents = df_combined$text,
+                           metadata = df_combined,
+                           removestopwords = FALSE,
+                           removenumbers = FALSE,
+                           removepunctuation = FALSE,
+                           stem = FALSE,
+                           language = "es")
+
+out <- prepDocuments(processed$documents,
+                     processed$vocab,
+                     processed$meta)
+```
+
+Train the model:
+
+With four topics (k = 4):
+
+```{r, results = 'hide'}
+stm_model <- stm(documents = out$documents,
+                 vocab = out$vocab,
+                 data = out$meta,
+                 K = 4,
+                 prevalence = ~ party + s(as.numeric(date)),
+                 seed = 1234)
+```
+
+Analyze the results:
+
+```{r}
+label_output <- labelTopics(stm_model, n = 10)
+
+label_output
+```
+
+-   `prob`: most frequent words in each topic ➞ May include generic words (not so informative).
+-   `frex`: weighted harmonic mean of word frequency and exclusivity. It includes words that are both common in the topic and distinctive to it ➞ Most interpretable labeling method, so we will focus on this metric.
+-   `lift`: ratio of the probability of a word in the topic to the overall probability of the word in all topics. It finds the most exclusive words for each topic (highlights niche words, but may overemphasize rare or obscure terms).
+-   `score`: this metric "divides the log frequency of the word of the topic by the log frequency of the word in other topics" ➞ it help us find highly discriminative words.
+
+```{r}
+frex_df <- as.data.frame(label_output$frex) |> 
+  mutate(topic = row_number()) |> 
+  pivot_longer(cols = starts_with("V"),
+               names_to = "rank",
+               values_to = "term") |> 
+  mutate(rank = as.integer(gsub("V", "", rank))) |> 
+  arrange(topic, rank)
+```
+
+```{r, echo = FALSE}
+datatable(frex_df,
+          options = list(
+            pageLength = 10,
+            dom = 'tp',
+            columnDefs = list(
+              list(className = 'dt-center', 
+                   targets = "_all")),
+            rownames = FALSE))
+```
+
+With 6 topics (k= 6):
+
+```{r, results = 'hide'}
+stm_model_6 <- stm(documents = out$documents,
+                 vocab = out$vocab,
+                 data = out$meta,
+                 K = 6,
+                 prevalence = ~ party + s(as.numeric(date)),
+                 seed = 1234)
+```
+
+```{r}
+label_output_6 <- labelTopics(stm_model_6, n = 10)
+
+frex_df_6 <- as.data.frame(label_output_6$frex) |> 
+  mutate(topic = row_number()) |> 
+  pivot_longer(cols = starts_with("V"),
+               names_to = "rank",
+               values_to = "term") |> 
+  mutate(rank = as.integer(gsub("V", "", rank))) |> 
+  arrange(topic, rank)
+```
+
+```{r, echo = FALSE}
+datatable(frex_df_6,
+          options = list(pageLength = 10,
+                         dom = 'tp',
+                         columnDefs = list(
+                           list(className = 'dt-center', 
+                                targets = "_all"))),
+          rownames = FALSE)
+```
+
+**4 Topics**:
+
+-   Economic, social and energy policy.
+
+-   Miscellaneous topics.
+
+-   Education policy.
+
+-   Catalan Independence.
+
+**6 Topics**:
+
+-   Energy transition and demographic challenge (España vaciada/rural).
+
+-   Economic/social policy and budgets (specially, pensions).
+
+-   Miscellaneous topics (broadcasting, disabilities, amendment, veto…)
+
+-   Justice and criminal law.
+
+-   Regional competencies: healthcare and education.
+
+-   catalan independence.
+
+Let's add them to our table:
+
+```{r}
+topic_labels <- c(
+  "1" = "Energy transition & demographic challenge",
+  "2" = "Economic/social policy & budgets",
+  "3" = "Miscellaneous topics",
+  "4" = "Justice & criminal law",
+  "5" = "Regional competencies (healthcare and education)",
+  "6" = "Catalan independence"
+)
+
+frex_df_6 <- frex_df_6 |> 
+  mutate(topic = as.character(topic)) |> 
+  mutate(label = topic_labels[topic]) |> 
+  relocate(label, .after = topic)
+```
+
+```{r, echo = FALSE}
+datatable(frex_df_6,
+          options = list(pageLength = 10,
+                         dom = 'tp',
+                         columnDefs = list(
+                           list(className = 'dt-center', 
+                                targets = "_all"))),
+          rownames = FALSE)
+```
+
+```{r}
+#save(stm_model_6, frex_df_6, processed, out, file = "DATA/stm_model_6.RData")
+load("DATA/stm_model_6.RData")
+```
+
+**Topic distribution by party:**
+
+```{r}
+theta_df <- as.data.frame(stm_model_6$theta)
+theta_df$party <- out$meta$party
+
+theta_avg <- theta_df |> 
+  group_by(party) |> 
+  summarise(across(everything(), mean))
+
+theta_long <- theta_avg |> 
+  pivot_longer(
+    cols = -party,
+    names_to = "topic",
+    values_to = "proportion"
+  ) |> 
+  mutate(topic = as.integer(gsub("V", "", topic))) |> 
+  left_join(
+    frex_df_6 |> 
+      mutate(topic = as.integer(topic)) |> 
+      select(topic, label) |> 
+      distinct(),
+    by = "topic"
+  )
+```
+
+Visualization:
+
+```{r}
+ggplot(theta_long, aes(x = party, y = proportion, fill = party)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ label, scales = "free_y") +
+  labs(
+    title = "Topic distribution by party",
+    x = "Party",
+    y = "avg proportion"
+  ) +
+  theme_minimal(base_size = 14) +
+  scale_fill_manual(values = party_colors) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    strip.text = element_text(face = "bold")
+  )
+```
+
+### 3.2. LDA
+
+#### In total
+
+```{r}
+# Create DTM
+dtm <- parsed_df_clean |> 
+  count(doc_id, word, sort = TRUE) |> 
+  cast_dtm(document = doc_id, term = word, value = n)
+
+# Apply LDA
+lda_model <- LDA(dtm, k = 4, control = list(seed = 123))
+
+# Extract the terms with tidytext
+lda_terms <- tidy(lda_model, matrix = "beta")
+
+# Select TOP 10 words with highest prob per topic
+top_terms <- lda_terms |> 
+  group_by(topic) |> 
+  slice_max(order_by = beta, n = 10) |> 
+  ungroup()
+
+# Visualize
+top_terms |> 
+  mutate(term = reorder_within(term, beta, topic)) |> 
+  ggplot(aes(x = beta, y = term, fill = factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ topic, scales = "free") +
+  scale_y_reordered() +
+  labs(
+    title = "Top 10 words per topic (LDA)",
+    x = "Probability (beta)",
+    y = "Word"
+  ) +
+  theme_minimal()
+```
+
+The words are too generic.
+
+#### By party and by year
+
+```{r}
+group_keys <- parsed_df_clean |> 
+  distinct(party, year)
+```
+
+```{r}
+lda_by_group <- function(party_val, year_val) {
+  df_group <- parsed_df_clean |> 
+    filter(party == party_val, year == year_val)
+
+    df_group <- df_group |> 
+    mutate(doc_id = as.character(doc_id))
+
+  dtm <- df_group |> 
+    count(doc_id, word) |> 
+    cast_dtm(document = doc_id, term = word, value = n)
+
+  if (nrow(dtm) < 10 || ncol(dtm) < 10) return(NULL)
+
+  lda_model <- LDA(dtm, k = 4, control = list(seed = 123))
+
+  terms <- tidy(lda_model, matrix = "beta") |> 
+    group_by(topic) |> 
+    slice_max(beta, n = 10) |> 
+    ungroup() |> 
+    mutate(party = party_val, year = year_val)
+
+  return(terms)
+}
+```
+
+```{r}
+lda_results <- pmap_dfr(group_keys, lda_by_group)
+```
+
+```{r}
+lda_results |> 
+  filter(year == 2016,
+         party == "PSOE") |> 
+  mutate(term = reorder_within(term, 
+                               beta, 
+                               interaction(topic, party))
+         ) |> 
+  ggplot(aes(x = beta, y = term, fill = factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ party + topic, scales = "free_y") +
+  scale_y_reordered() +
+  labs(
+    title = "Top 10 words per topic (PSOE, 2016)",
+    x = "Probability (beta)",
+    y = "Term"
+  ) +
+  theme_minimal(base_size = 12)
+```
+
+```{r}
+lda_results |> 
+  filter(year == 2017,
+         party == "Cs") |> 
+  mutate(term = reorder_within(term, 
+                               beta, 
+                               interaction(topic, party))
+         ) |> 
+  ggplot(aes(x = beta, y = term, fill = factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ party + topic, scales = "free_y") +
+  scale_y_reordered() +
+  labs(
+    title = "Top 10 words per topic (Cs, 2016)",
+    x = "Probability (beta)",
+    y = "Term"
+  ) +
+  theme_minimal(base_size = 12)
+```
+
+Still no significant differences. We better stick to STM.
+
+## 4. Sentiment Analysis
+
+### 4.1. `syuzhet` package
+
+This first method did not work. After several attempts of executing the chunk below, RStudio always ended up crashing.
+
+```{r}
+#| eval: false
+word <- parsed_df_clean$word
+
+sentiments_df <- get_nrc_sentiment(word, lang = "spanish")
+```
+
+```{r}
+#| eval: false
+summary(sentiments_df)
+```
+
+### 4.2. "Manual" version
+
+```{r}
+nrc_es <- read_csv("DATA/lexico_nrc.csv")
+
+nrc_es <- nrc_es |> 
+  select(palabra, sentimiento) |> 
+  rename(word = palabra,
+         sentiment = sentimiento)
+```
+
+```{r}
+unique(nrc_es$sentiment)
+```
+
+```{r}
+nrc_es_tran <- nrc_es |> 
+  mutate(sentiment_eng = case_when(
+    sentiment == "negativo" ~ "negative",
+    sentiment == "tristeza" ~ "sadness",
+    sentiment == "sorpresa" ~ "surprise",
+    sentiment == "anticipación" ~ "anticipation",
+    sentiment == "miedo" ~ "fear",
+    sentiment == "enfado" ~ "anger",
+    sentiment == "positivo" ~ "positive",
+    sentiment == "confianza" ~ "trust",
+    sentiment == "asco" ~ "disgust",
+    sentiment == "alegría" ~ "joy",
+  )) |> 
+  select(word, sentiment_eng)
+```
+
+```{r}
+#write_csv(nrc_es_tran, file = "DATA/lexico_nrc_tran.csv")
+```
+
+```{r}
+unique(nrc_es_tran$sentiment_eng)
+```
+
+```{r}
+parsed_df_clean |> 
+  filter(party %in% c("PSOE", "PP", "PNV"), year == 2016) |> 
+  inner_join(nrc_es_tran, by = "word") |> 
+  count(party, sentiment_eng) |> 
+  group_by(party) |> 
+  mutate(total = sum(n),
+         proportion = n / total) |> 
+  ungroup() |> 
+  ggplot(aes(x = sentiment_eng, y = proportion, fill = party)) +
+  geom_col(position = "dodge") +
+  labs(
+    title = "Distribution of emotions by party (2016)",
+    x = "Emotion",
+    y = "Proportion",
+    fill = "Party"
+  ) +
+  scale_fill_manual(values = party_colors) +
+  theme_minimal(base_size = 13) +
+  theme(axis.text.x = element_text(angle = 35, hjust = 1))
+```
+
+```{r}
+sentiment_2016 <- parsed_df_clean |> 
+  filter(party %in% c("PSOE", "PP", "ER"), year == 2017) |> 
+  inner_join(nrc_es_tran, by = "word") 
+  
+sentiment_2016 |> 
+  count(party, sentiment_eng) |> 
+  group_by(party) %>%
+  mutate(total = sum(n),
+         proportion = n / total) |> 
+  ungroup() |> 
+  ggplot(aes(x = sentiment_eng, y = proportion, fill = party)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ party, ncol = 1) +
+  labs(title = "Distribution of emotions by party (2016)",
+       x = "Emotion",
+       y = "Proportion") +
+  scale_fill_manual(values = party_colors) +
+  theme_minimal(base_size = 13) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+#### Filtering by party
+
+```{r}
+theta_df <- as.data.frame(stm_model_6$theta)
+theta_df$doc_id <- out$meta$doc_id 
+
+topic_labels <- frex_df_6 |> 
+  mutate(topic = as.integer(topic)) |> 
+  select(topic, label) |> 
+  distinct()
+```
+
+```{r}
+# Get dominant topic per doc
+doc_topics <- theta_df |> 
+  pivot_longer(cols = starts_with("V"), 
+               names_to = "topic", 
+               values_to = "gamma") |> 
+  mutate(topic = as.integer(str_remove(topic, "V"))) |> 
+  group_by(doc_id) |> 
+  slice_max(gamma, n = 1, with_ties = FALSE) |> 
+  ungroup() |> 
+  left_join(topic_labels, by = "topic") 
+
+# Join it 
+parsed_df_topics <- parsed_df_clean |> 
+  left_join(doc_topics, by = "doc_id")
+```
+
+```{r}
+#save(parsed_df_topics, file = "DATA/parsed_df_topics.RData")
+```
+
+```{r}
+sentiment_colors <- c(
+  "anger" = "#d62728", "anticipation" = "#bcbd22", "disgust" = "#8c564b",
+  "fear" = "#9467bd", "joy" = "#2ca02c", "sadness" = "#1f77b4",
+  "surprise" = "#17becf", "trust" = "#ff7f0e"
+)
+```
+
+```{r}
+parties_nrc_topics <- parsed_df_topics |> 
+  filter(party %in% c("PP", "PSOE", "ER")) |> 
+  inner_join(nrc_es_tran, by = "word")
+
+topic_mix <- parties_nrc_topics |> 
+  filter(!sentiment_eng %in% c("positive", "negative")) |> 
+  count(party, topic, sentiment_eng, name = "n") |> 
+  group_by(party, topic)  |> 
+  mutate(pct = n / sum(n)) |> 
+  ungroup()
+```
+
+```{r}
+ggplot(topic_mix, aes(x = reorder(topic, pct), y = pct, fill = sentiment_eng)) +
+  geom_col(color = "white", size = 0.2) +
+  facet_wrap(~ party, ncol = ) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 2)) +
+  scale_fill_manual(values = sentiment_colors, name = "Emotion") +
+  labs(
+    title = "Emotional tone across topics across selected parties",
+    x = "Topic",
+    y = "% of emotion words"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+#### Filtering by topic
+
+```{r}
+nrc_topic_df <- parsed_df_topics |> 
+  filter(topic == 6) |> 
+  inner_join(nrc_es_tran, by = "word") |> 
+  filter(!sentiment_eng %in% c("positive", "negative")) |> 
+  count(party, sentiment_eng, name = "n") |> 
+  group_by(party) |> 
+  mutate(pct = n / sum(n)) |> 
+  ungroup()
+```
+
+```{r}
+ggplot(nrc_topic_df, aes(x = party, y = pct, fill = sentiment_eng)) +
+  geom_col(color = "white", size = 0.2) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  scale_fill_manual(values = sentiment_colors, name = "Emotion") +
+  labs(
+    title = paste("Emotional tone by party on: Catalan Independence"),
+    x = NULL,
+    y = "% within party"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(axis.text.x = element_text(angle = 35, hjust = 1))
+```
+
+## 5. Bigrams network analysis
+
+```{r}
+# Create bigrams
+bigrams <- parsed_df_clean |> 
+  group_by(year, doc_id) |> 
+  summarise(text = paste(word, collapse = " "), .groups = "drop") |> 
+  unnest_tokens(bigram, text, token = "ngrams", n = 2)
+```
+
+```{r}
+# Separate bigrams into 2 words
+bigrams_separated <- bigrams |> 
+  separate(bigram, into = c("word1", "word2"), sep = " ")
+
+# Eliminate bigrams with empty words (just in case)
+bigrams_filtered <- bigrams_separated |> 
+  filter(!is.na(word1), !is.na(word2), word1 != "", word2 != "")
+
+# Count bigrams by year
+bigram_counts <- bigrams_filtered |> 
+  count(word1, word2, sort = TRUE)
+```
+
+```{r}
+# Select bigrams with higher frequency
+top_bigrams <- bigram_counts |> 
+  arrange(desc(n)) |> 
+  slice_max(n, n = 30) 
+  
+# Create graph object
+bigrams_graph <- top_bigrams |> 
+  select(word1, word2, n) |> 
+  graph_from_data_frame(directed = TRUE)
+```
+
+```{r, echo = FALSE}
+datatable(top_bigrams,
+          options = list(
+            pageLength = 10,
+            dom = 'tp',
+            columnDefs = list(
+              list(className = 'dt-center', 
+                   targets = "_all")),
+            rownames = FALSE))
+```
+
+```{r}
+ggraph(bigrams_graph, layout = "fr") +
+  geom_edge_link(aes(edge_alpha = n), show.legend = FALSE, edge_colour = "gray50") +
+  geom_node_point(color = "lightblue", size = 5) +
+  geom_node_text(aes(label = name), repel = TRUE, size = 4) +
+  theme_void() +
+  ggtitle("Bigram Network")
+```
+
+## 6. Pairwise correlation analysis
+
+The function `pairwise_cor()` from the `widyr` package allow us to find the correlation between pairs of word based on their frequency across different groups (docs, years, speaker...).
+
+```{r}
+correlation <- parsed_df_clean |>
+  select(doc_id, year, party, speaker, word) |>
+  group_by(word) |> 
+  filter(n() >= 20) |> 
+  pairwise_cor(item = word, feature = doc_id, sort = TRUE)
+
+cor_table <- correlation |> 
+  filter(correlation >= 0.7) |> 
+  mutate(correlation = round(correlation, 4))
+```
+
+```{r, echo = FALSE}
+datatable(cor_table,
+          options = list(
+            pageLength = 10,
+            dom = 'tp',
+            columnDefs = list(
+              list(className = 'dt-center', 
+                   targets = "_all")),
+            rownames = FALSE))
+```
+
+```{r}
+graph_cor <- graph_from_data_frame(cor_table,
+                                   directed = FALSE)
+
+ggraph(graph_cor, layout = "fr") +
+  geom_edge_link(aes(edge_alpha = correlation), edge_colour = "gray50") +
+  geom_node_point(color = "steelblue", size = 4) +
+  geom_node_text(aes(label = name), repel = TRUE, size = 3) +
+  theme_void() +
+  ggtitle("Word Correlation Network  (≥ 0.7)")
+```
