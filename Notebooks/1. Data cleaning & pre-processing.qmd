@@ -1,0 +1,203 @@
+---
+title: "Data cleaning & pre-processing"
+author: Estela Moral
+format: 
+  html:
+    self-contained: true
+    toc: true
+    toc-location: right
+    toc-title: Index
+editor: source
+---
+
+## Libraries
+
+```{r}
+#| warning: false
+#| message: false
+library(tidyverse)
+library(rvest)
+library(fuzzyjoin)
+library(kableExtra)
+```
+
+
+## Load and clean the data
+
+```{r}
+corp_congreso <- readRDS("DATA/Corp_Congreso_V2.rds")
+```
+
+```{r}
+#| echo: false 
+head(corp_congreso, n = 10) |>
+  kable(align = "c") |>
+  kable_styling(full_width = TRUE, 
+                bootstrap_options = c("condensed", "striped")) |>
+  column_spec(
+    1:ncol(head(corp_congreso)),
+    width = "250px",
+    extra_css = "text-align: center; vertical-align: middle; 
+    white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; max-width: 250px;"
+  ) |> 
+  column_spec(
+    9,  
+    width = "300px",
+    extra_css = "white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; max-width: 300px;") 
+```
+
+Let's select the variables we need and create a `doc_id` column (will be useful for the text analysis later).
+
+```{r}
+corp_congreso <- corp_congreso |> 
+  select(date, agenda, party, speaker, text) |> 
+  filter(!is.na(party)) |> 
+  mutate(date = as.Date(date),
+         doc_id = row_number()) |> 
+  relocate(doc_id, .before = everything())
+```
+
+
+## Clean party names
+
+```{r}
+unique(corp_congreso$party) # We need to remove the "G" --> "grupo"
+```
+
+```{r}
+corp_congreso <- corp_congreso |> 
+  mutate(party = sub("^G", "", party),
+         party = str_remove(party, "^C-"),
+         party = str_remove(party, "^V-"),
+         party = str_remove(party, "^V\\s?"))
+
+corp_congreso$party <- factor(corp_congreso$party)
+
+levels(corp_congreso$party)
+```
+
+Add full name of the political parties:
+
+```{r}
+corp_congreso <- corp_congreso |> 
+  mutate(party = case_when(
+    party %in% c("PNV", "EAJ-PNV") ~ "PNV", # Unificar EAJ-PNV y PNV
+    TRUE ~ party)) |> 
+  mutate(party_full = case_when( # Añadir nombre completo
+    party == "CC" ~ "Coalición Canaria",
+    party == "CC-NC" ~ "Coalición Canaria/Nueva Canarias",
+    party == "CiU" ~ "Convergència i Unió",
+    party == "Cs" ~ "Ciudadanos",
+    party == "CUP-EC-EM" ~ "Confederal de Unidos Podemos/En Comú/En Marea",
+    party == "DL" ~ "Democràcia i Llibertat",
+    party == "PNV" ~ "Partido Nacionalista Vasco",
+    party %in% c("ER", "ER-ERC") ~ "Esquerra Republicana",
+    party == "ER-IU-ICV" ~ "Esquerra Republicana/Izquierda Unida/Iniciativa per Catalunya Verds",
+    party == "IP" ~ "La Izquierda Plural",
+    party == "IU" ~ "Izquierda Unida",
+    party == "IU-ICV" ~ "Izquierda Unida/Iniciativa per Catalunya Verds",
+    party == "MX" ~ "Grupo Mixto",
+    party == "PP" ~ "Partido Popular",
+    party == "PSOE" ~ "Partido Socialista Obrero Español",
+    party == "UPyD" ~ "Unión Progreso y Democracia",
+    TRUE ~ "Otro/No identificado"
+    )) |> 
+  relocate(party_full, .after = party) 
+
+corp_congreso$party_full <- factor(corp_congreso$party_full)
+
+unique(corp_congreso$party_full)
+```
+
+
+## Add legislative terms
+
+At first, I did this because I wanted to analyse and include multiple legislative terms in the dashboard. Eventually, I only chose one because the dataset was too heavy to perform text mining. However I decided to keep it in case it is useful in the future
+
+```{r}
+url <- "https://es.wikipedia.org/wiki/Anexo:Legislaturas_de_Espa%C3%B1a"
+
+# Scrap data from wikipedia
+term_tbl <- url |> 
+  read_html() |> 
+  html_elements("table") |>
+  _[[9]] |> 
+  html_table()
+
+# Prepare data for joining both dataframes (corp_congreso + term_tbl)
+term_tbl <- term_tbl |> 
+  distinct(Legislatura, Inicio, Final) |> 
+  mutate(Inicio = dmy(Inicio),
+         Final = dmy(Final),
+         Legislatura = gsub(" \\(.*\\)", "", Legislatura),
+         anio_inicio = year(Inicio),
+         anio_final = year(Final),
+         anio_final = ifelse(is.na(anio_final), "Actualidad",
+                             as.character(anio_final)),
+         Legislatura = paste0(Legislatura, 
+                              " Legislatura (", anio_inicio, "–", 
+                              anio_final, ")"),
+         Legislatura = factor(Legislatura, 
+                              levels = unique(Legislatura), ordered = TRUE)) |> 
+  filter(!is.na(Final)) # I remove the last term because the NA gives me issues when using fuzzyjoin later, and I don't need it anyways
+
+# Join both dataframes
+complete_df <- interval_left_join(corp_congreso, term_tbl,
+                                  by = c("date" = "Inicio", 
+                                         "date" = "Final"))
+
+# Create another "year" variable
+complete_df <- complete_df |> 
+  mutate(anio = lubridate::year(date))
+```
+
+
+## Standardize all column names into a single language
+
+```{r}
+colnames(complete_df)
+```
+
+```{r}
+complete_df <- complete_df |> 
+  rename(term = Legislatura,
+         start = Inicio,
+         end = Final,
+         start_year = anio_inicio,
+         end_year = anio_final,
+         year = anio)
+```
+
+```{r}
+colnames(complete_df)
+```
+
+```{r}
+#| echo: false 
+head(complete_df, n = 10) |>
+  kable(align = "c") |>
+  kable_styling(full_width = TRUE, 
+                bootstrap_options = c("condensed", "striped")) |>
+  column_spec(
+    1:ncol(head(complete_df)),
+    width = "250px",
+    extra_css = "text-align: center; vertical-align: middle; 
+    white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; max-width: 250px;"
+  ) |> 
+  column_spec(
+    7,  
+    width = "300px",
+    extra_css = "white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; max-width: 300px;") 
+```
+
+
+## Save `complete_df`
+
+```{r}
+save(complete_df, file = "DATA/complete_df.RData")
+```
+
